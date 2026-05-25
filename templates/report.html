@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contract Review — {{ output.contract_id }}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         font-size: 14px; line-height: 1.5; background: #f4f6f8; color: #2c3e50; }
+  .container { max-width: 960px; margin: 32px auto; padding: 0 16px; }
+
+  /* Header */
+  .header { background: #fff; border-radius: 8px; padding: 24px 28px;
+            box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 20px; }
+  .header h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .header .meta { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .summary-text { color: #4a5568; line-height: 1.6; }
+
+  /* Risk badge */
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 20px;
+           font-size: 12px; font-weight: 700; letter-spacing: .5px;
+           color: #fff; text-transform: uppercase; }
+
+  /* Red flags */
+  .red-flags { background: #fff8f0; border-left: 4px solid #e67e22;
+               border-radius: 4px; padding: 16px 20px; margin-bottom: 20px; }
+  .red-flags h2 { font-size: 14px; font-weight: 600; margin-bottom: 10px;
+                  color: #c0392b; }
+  .red-flags ul { padding-left: 18px; }
+  .red-flags li { margin-bottom: 4px; color: #4a5568; }
+
+  /* Clause card */
+  .card { background: #fff; border-radius: 8px; margin-bottom: 16px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden; }
+  .card-header { display: flex; align-items: center; justify-content: space-between;
+                 padding: 14px 20px; border-bottom: 1px solid #edf2f7; }
+  .card-header h2 { font-size: 15px; font-weight: 600; text-transform: uppercase;
+                    letter-spacing: .4px; }
+  .found-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px;
+               font-weight: 600; }
+  .found-yes { background: #e8f8f0; color: #27ae60; }
+  .found-no  { background: #f8e8e8; color: #c0392b; }
+  .card-body { padding: 16px 20px; }
+
+  /* Collapsible sections */
+  details { margin-bottom: 12px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 13px; color: #2d3748;
+            padding: 6px 0; user-select: none; }
+  summary:hover { color: #4299e1; }
+  details[open] summary { margin-bottom: 8px; }
+
+  /* Interpretation table */
+  .interp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .interp-table td { padding: 5px 8px; border-bottom: 1px solid #edf2f7; }
+  .interp-table td:first-child { font-weight: 500; color: #4a5568; width: 45%; }
+  .interp-table tr:last-child td { border-bottom: none; }
+
+  /* Precedent list */
+  .precedent-list { list-style: none; padding: 0; }
+  .precedent-list li { padding: 8px 10px; background: #f7fafc; border-radius: 4px;
+                       margin-bottom: 6px; font-size: 13px; }
+  .precedent-list .cid { font-weight: 600; color: #2b6cb0; margin-right: 6px; }
+
+  /* Clause text block */
+  .clause-text { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px;
+                 padding: 12px; font-size: 12px; white-space: pre-wrap; color: #4a5568;
+                 max-height: 260px; overflow-y: auto; }
+
+  /* Risk rationale */
+  .rationale { background: #fffdf0; border-left: 3px solid #f6c90e;
+               padding: 10px 14px; border-radius: 4px; font-size: 13px;
+               color: #4a5568; margin-bottom: 12px; }
+
+  /* Uncertainty notes */
+  .notes-list { list-style: disc; padding-left: 18px; font-size: 13px; color: #718096; }
+  .notes-list li { margin-bottom: 3px; }
+
+  /* Null rating warning */
+  .null-warning { background: #f0f0f0; color: #7f8c8d; font-size: 12px;
+                  padding: 4px 10px; border-radius: 4px; display: inline-block; }
+
+  .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: .6px; color: #a0aec0; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  {# ------------------------------------------------------------------ Header #}
+  <div class="header">
+    <h1>Contract Review Report</h1>
+    <div class="meta">
+      <span style="color:#4a5568; font-weight:500;">{{ output.contract_id }}</span>
+      {% set rl = output.overall_risk_rating.value %}
+      <span class="badge" style="background:{{ risk_color_map.get(rl, '#7f8c8d') }};">{{ rl }}</span>
+    </div>
+    <p class="summary-text">{{ output.overall_summary }}</p>
+  </div>
+
+  {# ---------------------------------------------------------------- Red flags #}
+  {% if output.top_red_flags %}
+  <div class="red-flags">
+    <h2>&#9888; Top Red Flags</h2>
+    <ul>
+      {% for flag in output.top_red_flags %}
+      <li>{{ flag }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ---------------------------------------------------------------- Clause cards #}
+  {% for card in output.clause_cards %}
+  {% set rl = card.llm_generated_risk_rating.value if card.llm_generated_risk_rating else None %}
+  {% set color = risk_color_map.get(rl, '#7f8c8d') %}
+  <div class="card">
+    <div class="card-header">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2>{{ card.clause_family.replace('_', ' ') }}</h2>
+        {% if rl %}
+        <span class="badge" style="background:{{ color }};">{{ rl }}</span>
+        {% else %}
+        <span class="null-warning">rating unavailable</span>
+        {% endif %}
+      </div>
+      <span class="found-tag {% if card.clause_found %}found-yes{% else %}found-no{% endif %}">
+        {% if card.clause_found %}Clause Found{% else %}Not Found{% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+
+      {# Extracted text #}
+      {% if card.extracted_clause_text %}
+      <details>
+        <summary>Extracted Clause Text</summary>
+        <pre class="clause-text">{{ card.extracted_clause_text }}</pre>
+      </details>
+      {% endif %}
+
+      {# Structured interpretation #}
+      {% if card.structured_interpretation %}
+      <details>
+        <summary>Structured Interpretation</summary>
+        <table class="interp-table">
+          {% for key, val in card.structured_interpretation.items() %}
+          <tr>
+            <td>{{ key }}</td>
+            <td>
+              {% if val is iterable and val is not string %}
+                {% if val %}{{ val | join(', ') }}{% else %}—{% endif %}
+              {% elif val is none %}
+                —
+              {% else %}
+                {{ val }}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      {% endif %}
+
+      {# Similar precedents #}
+      {% if card.similar_precedents %}
+      <details>
+        <summary>Similar Precedents ({{ card.similar_precedents | length }})</summary>
+        <ul class="precedent-list">
+          {% for p in card.similar_precedents %}
+          <li><span class="cid">{{ p.contract_id }}</span>{{ p.why_similar }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% else %}
+      <p style="font-size:12px; color:#a0aec0; margin-bottom:10px;">
+        No similar precedents retrieved
+        {% if not card.clause_found %} (clause not found){% endif %}.
+      </p>
+      {% endif %}
+
+      {# Contrasting precedents #}
+      {% if card.contrasting_precedents %}
+      <details>
+        <summary>Contrasting Precedents ({{ card.contrasting_precedents | length }})</summary>
+        <ul class="precedent-list">
+          {% for p in card.contrasting_precedents %}
+          <li><span class="cid">{{ p.contract_id }}</span>{{ p.why_contrasting }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% else %}
+      <p style="font-size:12px; color:#a0aec0; margin-bottom:10px;">
+        No contrasting precedents retrieved
+        {% if not card.clause_found %} (clause not found){% endif %}.
+      </p>
+      {% endif %}
+
+      {# Risk rationale #}
+      {% if card.risk_rationale %}
+      <p class="section-label">Risk Rationale</p>
+      <div class="rationale">{{ card.risk_rationale }}</div>
+      {% endif %}
+
+      {# Uncertainty notes #}
+      {% if card.confidence_uncertainty_notes %}
+      <p class="section-label">Uncertainty Notes</p>
+      <ul class="notes-list">
+        {% for note in card.confidence_uncertainty_notes %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+    </div>
+  </div>
+  {% endfor %}
+
+</div>
+</body>
+</html>

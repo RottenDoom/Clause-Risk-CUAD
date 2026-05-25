@@ -1,0 +1,8 @@
+# Track large contract files and annotation CSVs with Git LFS
+# (only relevant if data/cuad_raw/ is committed; it is gitignored by default)
+data/cuad_raw/**/*.txt filter=lfs diff=lfs merge=lfs -text
+data/cuad_raw/**/*.csv filter=lfs diff=lfs merge=lfs -text
+data/reference/*.txt   filter=lfs diff=lfs merge=lfs -text
+data/test/*.txt        filter=lfs diff=lfs merge=lfs -text
+*.pdf filter=lfs diff=lfs merge=lfs -text
+*.txt filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,23 @@
+# Environment
+.vscode/
+.env
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Data — large files not committed as plain blobs
+data/cuad_raw/
+data/chroma_db/
+
+# Outputs
+output/json/
+output/html/
+
+# HuggingFace / torch caches that may land in project dir
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
