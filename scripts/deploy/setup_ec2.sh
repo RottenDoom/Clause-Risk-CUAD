@@ -33,7 +33,7 @@ APP_PORT=8000
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo "==> Updating system packages..."
 sudo apt-get update -qq
-sudo apt-get install -y python3.11 python3.11-venv python3-pip nginx git curl
+sudo apt-get install -y python3 python3-venv python3-pip nginx git curl
 
 # ── 2. uv (fast package manager used locally) ────────────────────────────────
 echo "==> Installing uv..."
@@ -53,7 +53,7 @@ cd "$APP_DIR"
 
 # ── 4. Python venv + deps ────────────────────────────────────────────────────
 echo "==> Creating venv and installing dependencies (torch will take a few minutes)..."
-python3.11 -m venv venv
+uv venv venv
 source venv/bin/activate
 uv pip install -r requirements.txt
 
