@@ -1,0 +1,40 @@
+# scripts/deploy/contract-review.service
+#
+# Systemd unit file for the contract review FastAPI server.
+# Copy to /etc/systemd/system/contract-review.service
+#
+# Commands:
+#   sudo systemctl daemon-reload
+#   sudo systemctl start contract-review
+#   sudo systemctl enable contract-review   # auto-start on boot
+#   sudo systemctl status contract-review
+#   journalctl -u contract-review -f        # live logs
+
+[Unit]
+Description=Contract Review FastAPI (uvicorn)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/contract-review
+
+# All API keys are loaded from this file — never hardcode them above.
+EnvironmentFile=/home/ubuntu/contract-review/.env
+
+# 2 workers: one handles the long review job, one stays responsive for polling.
+# Increase to 4 on t3.medium if you see queueing.
+ExecStart=/home/ubuntu/contract-review/venv/bin/uvicorn \
+    api.routes:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 2
+
+Restart=always
+RestartSec=5
+
+# Log to journald — read with: journalctl -u contract-review -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
