@@ -25,14 +25,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
+
+from services.logging_setup import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 from api.models import JobStatus, Job, SubmitResponse, StatusResponse
 from agent.loop import ReviewLoop
@@ -49,6 +56,16 @@ from services.retrieval.retriever import Retriever
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Contract Risk Review API", version="0.2.0")
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    t0 = time.monotonic()
+    response = await call_next(request)
+    ms = int((time.monotonic() - t0) * 1000)
+    logger.info("%s %s → %d (%dms)", request.method, request.url.path, response.status_code, ms)
+    return response
+
 
 _retriever: Optional[Retriever] = None
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -75,19 +92,14 @@ async def _startup() -> None:
 AVAILABLE_MODELS: list[dict[str, str]] = [
     {
         "id": "claude-haiku-4-5-20251001",
-        "display_name": "Claude Haiku",
+        "display_name": "Claude Haiku (default)", # for default testing
         "description": "Fastest and cheapest. Good for quick reviews.",
     },
     {
         "id": "claude-sonnet-4-6",
-        "display_name": "Claude Sonnet (default)",
+        "display_name": "Claude Sonnet",
         "description": "Balanced speed and quality. Recommended for most contracts.",
-    },
-    {
-        "id": "claude-opus-4-7",
-        "display_name": "Claude Opus",
-        "description": "Most capable. Best for complex or high-stakes contracts.",
-    },
+    }
 ]
 
 _VALID_MODEL_IDS: set[str] = {m["id"] for m in AVAILABLE_MODELS}
@@ -186,6 +198,11 @@ def _contract_id_from_text(text: str) -> str:
 def _run_review(job_id: str, contract_text: str) -> None:
     job = _jobs[job_id]
     job.status = JobStatus.running
+    t0 = time.monotonic()
+    logger.info(
+        "job_id=%s contract_id=%s families=%s model=%s: starting",
+        job_id, job.contract_id, job.families, job.model,
+    )
     try:
         llm = ClaudeClient(model=job.model)
         loop = ReviewLoop(llm_client=llm, retriever=_retriever)
@@ -200,7 +217,10 @@ def _run_review(job_id: str, contract_text: str) -> None:
         job.result = output.model_dump()
         job.html_path = str(html_path)
         job.status = JobStatus.done
+        logger.info("job_id=%s done (%.1fs) overall_risk=%s", job_id, time.monotonic() - t0, output.overall_risk_rating)
     except Exception as exc:
+        elapsed = time.monotonic() - t0
+        logger.error("job_id=%s failed after %.1fs — %s", job_id, elapsed, exc, exc_info=True)
         job.status = JobStatus.failed
         job.error = str(exc)
 
@@ -266,6 +286,10 @@ async def submit_review(
         model=chosen_model,
     )
     _jobs[job_id] = job
+    logger.info(
+        "job_id=%s submitted contract_id=%s chars=%d families=%s model=%s",
+        job_id, contract_id, len(contract_text), chosen_families, chosen_model,
+    )
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(_executor, _run_review, job_id, contract_text)
