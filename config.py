@@ -197,3 +197,14 @@ COLLECTION_NAMES = {
     "termination":       "cuad_termination",
     "exclusivity":       "cuad_exclusivity",
 }
+
+# ---------------------------------------------------------------------------
+# Pinecone vector store (alternative to ChromaDB)
+# One serverless index, four namespaces — one per clause family.
+# Free tier: 1 index, AWS us-east-1, up to ~2M vectors.
+# Requires PINECONE_API_KEY in .env.
+# ---------------------------------------------------------------------------
+
+PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "cuad-contracts")
+PINECONE_CLOUD      = os.environ.get("PINECONE_CLOUD", "aws")
+PINECONE_REGION     = os.environ.get("PINECONE_REGION", "us-east-1")

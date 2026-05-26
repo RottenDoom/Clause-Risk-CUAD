@@ -21,8 +21,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import MAX_TOKENS, MODEL
-from agent.models import ContrastingPrecedent, RiskLevel, SimilarPrecedent
+from config import MAX_TOKENS
+from agent.models import ClauseCard, ContrastingPrecedent, RiskLevel, SimilarPrecedent
+from services.generation.base import LLMClient
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ def generate_risk_rating(
     structured_interpretation: dict,
     similar_precedents: list[SimilarPrecedent],
     contrasting_precedents: list[ContrastingPrecedent],
-    anthropic_client,
+    llm: LLMClient,
 ) -> tuple[Optional[RiskLevel], Optional[str], list[str]]:
     """
     Returns (risk_rating, risk_rationale, confidence_uncertainty_notes).
@@ -116,21 +117,13 @@ def generate_risk_rating(
             retry=(attempt == 1),
         )
         try:
-            response = anthropic_client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.content[0].text.strip()
-            clean = raw.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(clean)
+            parsed = llm.generate_json(prompt, system=system, max_tokens=MAX_TOKENS)
 
             rating_str = parsed.get("risk_rating", "").lower()
             try:
                 risk_level = RiskLevel(rating_str)
             except ValueError:
-                risk_level = RiskLevel.medium  # safe fallback within the loop
+                risk_level = RiskLevel.medium
 
             rationale = parsed.get("risk_rationale") or ""
             notes: list[str] = parsed.get("confidence_uncertainty_notes") or []
@@ -139,7 +132,7 @@ def generate_risk_rating(
 
             return risk_level, rationale, notes
 
-        except (json.JSONDecodeError, KeyError, Exception):
+        except Exception:
             if attempt == 1:
                 return (
                     None,
@@ -147,5 +140,46 @@ def generate_risk_rating(
                     ["Risk rating could not be generated: LLM response was not parseable JSON."],
                 )
 
-    # Should never reach here
     return None, None, ["Unexpected error during risk rating generation."]
+
+
+def generate_risk_card(
+    family: str,
+    clause_text: Optional[str],
+    clause_found: bool,
+    similar: list[SimilarPrecedent],
+    contrasting: list[ContrastingPrecedent],
+    llm: LLMClient,
+    structured_interpretation: Optional[dict] = None,
+) -> ClauseCard:
+    """
+    Convenience wrapper called by loop.py. Runs interpret_clause (if needed)
+    then generate_risk_rating, and assembles a ClauseCard.
+    """
+    from agent.interpretation import get_null_interpretation, interpret_clause
+
+    if clause_found and clause_text:
+        interp = structured_interpretation or interpret_clause(clause_text, family, llm)
+    else:
+        interp = get_null_interpretation(family)
+
+    risk_level, rationale, notes = generate_risk_rating(
+        clause_family=family,
+        extracted_clause_text=clause_text,
+        structured_interpretation=interp,
+        similar_precedents=similar,
+        contrasting_precedents=contrasting,
+        llm=llm,
+    )
+
+    return ClauseCard(
+        clause_family=family,
+        clause_found=clause_found,
+        extracted_clause_text=clause_text,
+        structured_interpretation=interp,
+        similar_precedents=similar,
+        contrasting_precedents=contrasting,
+        llm_generated_risk_rating=risk_level,
+        risk_rationale=rationale,
+        confidence_uncertainty_notes=notes,
+    )

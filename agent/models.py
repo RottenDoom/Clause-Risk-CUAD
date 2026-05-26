@@ -86,7 +86,7 @@ class ClauseCard(BaseModel):
 
 class ContractReviewOutput(BaseModel):
     contract_id: str
-    overall_summary: str
     overall_risk_rating: RiskLevel
-    top_red_flags: List[str]
+    overall_summary: str = ""
+    top_red_flags: List[str] = Field(default_factory=list)
     clause_cards: List[ClauseCard]  # always exactly 4 items

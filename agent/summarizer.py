@@ -18,15 +18,16 @@ from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import MAX_TOKENS, MODEL
+from config import MAX_TOKENS
 from agent.models import ClauseCard, RiskLevel
+from services.generation.base import LLMClient
 
 
 # ---------------------------------------------------------------------------
 # Rule-based aggregate risk
 # ---------------------------------------------------------------------------
 
-def _aggregate_risk(cards: List[ClauseCard]) -> tuple[RiskLevel, list[str]]:
+def aggregate_risk(cards: List[ClauseCard]) -> tuple[RiskLevel, list[str]]:
     """
     Max-based aggregation:
       any high  → high
@@ -78,7 +79,7 @@ def _format_cards_for_prompt(cards: List[ClauseCard]) -> str:
 def _claude_summary(
     contract_id: str,
     cards: List[ClauseCard],
-    anthropic_client,
+    llm: LLMClient,
 ) -> tuple[str, list[str]]:
     cards_block = _format_cards_for_prompt(cards)
     prompt = (
@@ -92,24 +93,20 @@ def _claude_summary(
         '{"overall_summary": "...", "top_red_flags": ["...", ...]}'
     )
     try:
-        resp = anthropic_client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
+        parsed = llm.generate_json(
+            prompt,
             system=(
                 "You are a commercial contract risk analyst. "
                 "Respond only in JSON with no markdown fences."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            max_tokens=MAX_TOKENS,
         )
-        raw = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(raw)
         summary = parsed.get("overall_summary", "")
         red_flags: list[str] = parsed.get("top_red_flags") or []
         if isinstance(red_flags, str):
             red_flags = [red_flags]
         return summary, red_flags
     except Exception:
-        # Graceful degradation: synthesize from card rationales
         summary = (
             f"Contract {contract_id} reviewed across four clause families. "
             "See individual clause cards for details."
@@ -129,12 +126,12 @@ def _claude_summary(
 def summarize_contract(
     contract_id: str,
     clause_cards: List[ClauseCard],
-    anthropic_client,
+    llm: LLMClient,
 ) -> tuple[str, RiskLevel, list[str]]:
     """
     Returns (overall_summary, overall_risk_rating, top_red_flags).
     """
-    overall_risk, null_flags = _aggregate_risk(clause_cards)
-    overall_summary, llm_flags = _claude_summary(contract_id, clause_cards, anthropic_client)
+    overall_risk, null_flags = aggregate_risk(clause_cards)
+    overall_summary, llm_flags = _claude_summary(contract_id, clause_cards, llm)
     top_red_flags = llm_flags + null_flags
     return overall_summary, overall_risk, top_red_flags

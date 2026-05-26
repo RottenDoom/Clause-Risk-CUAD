@@ -25,8 +25,8 @@ from config import (
     INTERPRETATION_MIN_WORDS,
     INTERPRETATION_SHORT_TEXT_PENALTY,
     MAX_TOKENS,
-    MODEL,
 )
+from services.generation.base import LLMClient
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +186,9 @@ _SEMANTIC_PROMPTS: dict[str, str] = {
 def _call_claude_for_semantic_field(
     clause_text: str,
     clause_family: str,
-    anthropic_client,
+    llm: LLMClient,
 ) -> dict:
-    """One targeted Claude call to resolve semantic fields for the given family."""
+    """One targeted LLM call to resolve semantic fields for the given family."""
     field_spec = _SEMANTIC_PROMPTS.get(clause_family, "")
     if not field_spec:
         return {}
@@ -199,18 +199,11 @@ def _call_claude_for_semantic_field(
         f"{field_spec}"
     )
     try:
-        response = anthropic_client.messages.create(
-            model=MODEL,
+        return llm.generate_json(
+            prompt,
+            system="You are a legal clause analyzer. Respond only in JSON with no markdown fences.",
             max_tokens=128,
-            system=(
-                "You are a legal clause analyzer. "
-                "Respond only in JSON with no markdown fences."
-            ),
-            messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
-        clean = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
     except Exception:
         return {}
 
@@ -228,7 +221,7 @@ def _compute_confidence(
     score -= n_llm_fields * INTERPRETATION_CONFIDENCE_PENALTY_PER_LLM_FIELD
     if word_count < INTERPRETATION_MIN_WORDS:
         score -= INTERPRETATION_SHORT_TEXT_PENALTY
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, score))    
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +231,14 @@ def _compute_confidence(
 def interpret_clause(
     clause_text: str,
     clause_family: str,
-    anthropic_client,
+    llm: LLMClient,
 ) -> dict:
     """
     Two-pass structured interpretation.
     Returns a dict conforming to the appropriate per-family Pydantic model.
     """
+
+    # This checks the different features of each clause family
     heuristic_fn = {
         "assignment": _heuristic_assignment,
         "change_of_control": _heuristic_change_of_control,
@@ -257,7 +252,8 @@ def interpret_clause(
     fields, n_llm_fields = heuristic_fn(clause_text)
 
     if n_llm_fields > 0:
-        semantic = _call_claude_for_semantic_field(clause_text, clause_family, anthropic_client)
+        # TODO: This call might not be needed.
+        semantic = _call_claude_for_semantic_field(clause_text, clause_family, llm)
         fields.update(semantic)
 
     # Fill in any missing semantic fields with safe defaults
@@ -267,6 +263,7 @@ def interpret_clause(
     return fields
 
 
+# Default fallback (can't just use another LLM call for now)
 def _apply_defaults(fields: dict, family: str) -> None:
     """Fill semantic fields with 'unknown'/False if Claude returned nothing."""
     if family == "assignment":

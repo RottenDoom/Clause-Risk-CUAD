@@ -64,6 +64,47 @@ ANCHOR_QUERIES: dict[str, list[str]] = {
     ],
 }
 
+# Broader anchor sets used on retry when the standard set scores below threshold.
+# More varied phrasing catches contracts that use unusual boilerplate.
+BROAD_ANCHOR_QUERIES: dict[str, list[str]] = {
+    "assignment": [
+        "transfer of rights obligations or interests under this agreement",
+        "consent is required before any assignment or delegation",
+        "the agreement binds the parties their successors and permitted assigns",
+        "assignment without consent shall be void and of no effect",
+        "party may not delegate its duties without written permission",
+        "change of ownership does not automatically assign this contract",
+        "permitted assignments include transfers to wholly owned subsidiaries",
+    ],
+    "change_of_control": [
+        "direct or indirect change in majority ownership of a party",
+        "sale of all or substantially all assets triggers special rights",
+        "upon a corporate restructuring or reorganization the other party must be notified",
+        "change in beneficial ownership of voting shares",
+        "surviving entity in a merger shall assume all obligations",
+        "party undergoing a change of control must provide advance written notice",
+        "change of control event gives the non-affected party termination rights",
+    ],
+    "termination": [
+        "this agreement may be terminated by written notice to the other party",
+        "either party may end this agreement upon sixty days prior written notice",
+        "termination shall not relieve either party of accrued obligations",
+        "upon expiration or earlier termination of this agreement",
+        "the agreement shall automatically expire unless renewed",
+        "party may terminate immediately upon material uncured breach",
+        "termination rights arise upon insolvency liquidation or dissolution",
+    ],
+    "exclusivity": [
+        "customer shall obtain the service exclusively from provider",
+        "supplier is the sole and exclusive source for the products",
+        "during the term neither party may work with competitors",
+        "non-solicitation and non-competition obligations survive termination",
+        "exclusive license granted for the territory and term",
+        "restrictions on engaging with third-party vendors for similar services",
+        "preferred supplier status grants the right of first refusal",
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # Chunking (mirrors build_index.py — same parameters, same logic)
@@ -111,19 +152,25 @@ def _merge_chunks(
 def discover_clause(
     contract_text: str,
     clause_family: str,
+    broad: bool = False,
 ) -> tuple[bool, str | None, float]:
     """
     Find the clause text for a given family within a raw contract.
 
+    Args:
+        broad: If True, use the extended BROAD_ANCHOR_QUERIES set and relax the
+               score threshold by 15%. Called on retry by loop.py when the first
+               pass scores below DISCOVERY_MIN_SCORE.
+
     Returns:
-        clause_found:         True if the best averaged score >= DISCOVERY_MIN_SCORE
+        clause_found:          True if the best averaged score >= threshold
         extracted_clause_text: Merged span of the top-K chunks, or None
-        best_score:           Max averaged anchor score across all chunks
+        best_score:            Max averaged anchor score across all chunks
     """
     if clause_family not in CLAUSE_FAMILIES:
         raise ValueError(f"Unknown clause family: {clause_family!r}")
 
-    anchors = ANCHOR_QUERIES[clause_family]
+    anchors = BROAD_ANCHOR_QUERIES[clause_family] if broad else ANCHOR_QUERIES[clause_family]
     chunks = _chunk_contract(contract_text)
     if not chunks:
         return False, None, 0.0
@@ -141,7 +188,8 @@ def discover_clause(
     avg_scores: np.ndarray = sim_matrix.mean(axis=0)  # (n_chunks,)
 
     best_score = float(avg_scores.max())
-    if best_score < DISCOVERY_MIN_SCORE:
+    threshold = DISCOVERY_MIN_SCORE * 0.85 if broad else DISCOVERY_MIN_SCORE
+    if best_score < threshold:
         return False, None, best_score
 
     # Take top-K chunks by averaged score

@@ -39,6 +39,9 @@ def _validate(output: ContractReviewOutput) -> None:
 
 
 def write_output(output: ContractReviewOutput) -> None:
+    """
+    Writes the output of the pipeline to the Jinja2 Templated file.
+    """
     _validate(output)
 
     OUTPUT_JSON_DIR.mkdir(parents=True, exist_ok=True)
