@@ -1,24 +1,25 @@
 # Contract Clause Risk Review Agent
 
-An agentic pipeline that analyses commercial contracts against four high-risk clause families, retrieves precedents from 80 reference contracts, and generates structured risk cards via the Claude API. Exposes a FastAPI backend with async job execution.
+An agentic pipeline that analyses commercial contracts against four high-risk clause families, retrieves precedents from 80 reference contracts [CUAD Dataset](https://github.com/TheAtticusProject/cuad), and generates structured risk cards via LLM calls.
 
 ---
 
 ## Features
+Following are some of the features I have taken into account with respect to the constraints.
 
 - **Clause Discovery** — finds clause spans using local sentence embeddings. No LLM, no external DB. Retries with a broader anchor set before giving up.
 - **Precedent Retrieval** — queries a Pinecone (or ChromaDB) vector index of 80 reference contracts. Returns up to 3 similar and 3 contrasting precedents per clause family.
 - **Structured Interpretation** — regex heuristics for deterministic fields + one targeted LLM call for semantic fields (consent scope, acquirer binding, exclusivity scope).
-- **LLM Risk Rating** — one Claude call per clause family produces `risk_rating`, `risk_rationale`, and `confidence_uncertainty_notes`. Retries once on JSON parse failure; degrades gracefully on second failure.
+- **LLM Risk Rating** — one LLM call per clause family produces `risk_rating`, `risk_rationale`, and `confidence_uncertainty_notes`. Retries once on JSON parse failure; degrades gracefully on second failure.
 - **Rule-Based Aggregate Risk** — `max(cards)` with no extra LLM call. On-demand summary available separately.
 - **Dual Vector Backend** — Pinecone (cloud, free tier) and ChromaDB (local) are both supported. `build_index.py` can populate both in parallel.
 - **FastAPI Backend** — async job queue (ThreadPoolExecutor), in-process job store, polling endpoint.
-- **Loguru Logging** — every LLM call, Pinecone query, pipeline step, and HTTP request is logged with timing.
-- **AWS Deployment Scripts** — EC2 setup, nginx config, systemd service, and redeploy script.
 
 ---
 
 ## Pipeline
+The architecture for the project follows a Agentic Loop hueristic. The pipeline tests
+clause discovery using `anchor queries`, if the score is below a threshold the agent retries using a broader anchor length. The next step is precedent retrieval using the found clause and search for similar and contrasting clauses.  Any failure is given retry logic and a failure handler as well. Final llm call is done on the retrieved information for final interpretation and risk rating. The summary since not really required is not explicitely done in the loop but can be done towards the end as well. Jinja2 Templates are used for now.
 
 ```
 Raw contract text (.txt)
@@ -334,66 +335,6 @@ Targets:
 
 ---
 
-## Deployment (AWS EC2)
-
-### First Deploy
-
-```bash
-# On your EC2 instance (Ubuntu 22.04, t3.small or larger)
-export REPO_URL=https://github.com/yourname/yourrepo.git
-chmod +x scripts/deploy/setup_ec2.sh
-./scripts/deploy/setup_ec2.sh
-```
-
-This installs Python, nginx, uv, clones the repo, creates the venv, installs deps, writes the systemd service and nginx config.
-
-After it completes:
-
-```bash
-# 1. Fill in your API keys
-nano /home/ubuntu/contract-review/.env
-
-# 2. Build the Pinecone index
-cd /home/ubuntu/contract-review
-source venv/bin/activate
-python3 scripts/build_index.py --pinecone
-
-# 3. Start the service
-sudo systemctl start contract-review
-sudo systemctl status contract-review
-
-# 4. Watch live logs
-journalctl -u contract-review -f
-```
-
-### Redeploying
-
-```bash
-./scripts/deploy/deploy.sh
-```
-
-### HTTPS (optional)
-
-```bash
-sudo apt install certbot python3-certbot-nginx -y
-sudo certbot --nginx -d yourdomain.com
-```
-
-### Production Architecture
-
-```
-Internet
-    ↓
-Nginx  (ports 80/443, SSL termination, rate limiting)
-    ↓
-FastAPI / uvicorn  (127.0.0.1:8000, 2 workers)
-    ↓
-Claude API  +  Pinecone API  (outbound only)
-```
-
-Ports to open in your EC2 security group: **22** (SSH), **80** (HTTP), **443** (HTTPS). Port 8000 should remain closed to the public.
-
----
 
 ## Configuration
 
