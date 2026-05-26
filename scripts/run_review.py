@@ -27,13 +27,7 @@ try:
 except ImportError:
     pass  # python-dotenv optional; fall back to env var already being set
 
-from config import (
-    CHROMA_DB_PATH,
-    CLAUSE_FAMILIES,
-    MODEL,
-    MAX_TOKENS,
-    TEST_DIR,
-)
+from config import CLAUSE_FAMILIES, TEST_DIR
 
 # Agent pipeline imports — these modules are implemented in issues 3-10.
 # run_review.py is intentionally written first so it serves as the
@@ -45,6 +39,8 @@ from agent.precedent_retrieval import retrieve_precedents
 from agent.risk_rating import generate_risk_rating
 from agent.summarizer import summarize_contract
 from agent.output_writer import write_output
+from services.generation.claude_client import ClaudeClient
+from services.retrieval.retriever import Retriever
 
 
 # ---------------------------------------------------------------------------
@@ -54,24 +50,16 @@ from agent.output_writer import write_output
 def review_contract(contract_path: Path) -> ContractReviewOutput:
     """
     Run the full pipeline for a single contract .txt file.
-    Reads only the raw text — no annotation data is accessed.
+    Reads only the raw text — no annotation data is accessed. 
     """
     contract_text = contract_path.read_text(encoding="utf-8", errors="ignore")
     contract_id = contract_path.stem
 
-    # Both clients are created once and shared across all four family passes.
-    try:
-        import chromadb
-        import anthropic
-    except ImportError as e:
-        sys.exit(f"ERROR: missing dependency — {e}. Run: uv pip install -r requirements.txt")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("ERROR: API key not set. Add it to .env or export it.")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        sys.exit("ERROR: ANTHROPIC_API_KEY not set. Add it to .env or export it.")
-
-    chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-    anthropic_client = anthropic.Anthropic(api_key=api_key)
+    llm = ClaudeClient()
+    retriever = Retriever()
 
     clause_cards: list[ClauseCard] = []
 
@@ -83,13 +71,13 @@ def review_contract(contract_path: Path) -> ContractReviewOutput:
         # Interpretation and retrieval only run when the clause was found.
         # When not found, null-safe defaults are used so the card is still produced.
         if clause_found:
-            interpretation = interpret_clause(extracted_text, family, anthropic_client)
+            interpretation = interpret_clause(extracted_text, family, llm)
         else:
             interpretation = get_null_interpretation(family)
 
         if clause_found and extracted_text:
             similar, contrasting = retrieve_precedents(
-                extracted_text, family, chroma_client, anthropic_client
+                extracted_text, family, retriever, llm
             )
         else:
             similar, contrasting = [], []
@@ -97,7 +85,7 @@ def review_contract(contract_path: Path) -> ContractReviewOutput:
         print(f"  [{family}] generating risk rating...", end=" ", flush=True)
         risk_rating, rationale, notes = generate_risk_rating(
             family, extracted_text, interpretation,
-            similar, contrasting, anthropic_client
+            similar, contrasting, llm
         )
         print(f"{'null' if risk_rating is None else risk_rating.value}")
 
@@ -115,7 +103,7 @@ def review_contract(contract_path: Path) -> ContractReviewOutput:
 
     print("  Summarising contract...", end=" ", flush=True)
     overall_summary, overall_risk, red_flags = summarize_contract(
-        contract_id, clause_cards, anthropic_client
+        contract_id, clause_cards, llm
     )
     print(f"overall={overall_risk.value}")
 
