@@ -18,10 +18,13 @@ LLM call budget per family (when clause is found):
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+logger = logging.getLogger(__name__)
 
 from config import (
     CONTRAST_CLAUSE_TRUNCATION_CHARS,
@@ -91,8 +94,8 @@ def _get_similar(
         ]
         if result:
             return result
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("family=%s why_similar batch call failed — using fallback: %s", family, exc)
 
     # Fallback: return candidates with a generic reason rather than failing silently
     return [
@@ -184,9 +187,12 @@ def retrieve_precedents(
     Returns (similar_precedents, contrasting_precedents).
     Both lists may be empty only if the collection has no entries for this family.
     """
-    if retriever.collection_count(clause_family) == 0:
+    count = retriever.collection_count(clause_family)
+    if count == 0:
+        logger.warning("family=%s collection empty — skipping retrieval", clause_family)
         return [], []
 
     similar = _get_similar(extracted_clause_text, clause_family, retriever, llm)
     contrasting = _get_contrasting(extracted_clause_text, clause_family, retriever, llm)
+    logger.info("family=%s similar=%d contrasting=%d", clause_family, len(similar), len(contrasting))
     return similar, contrasting

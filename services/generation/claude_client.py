@@ -5,12 +5,16 @@ Anthropic Claude implementation of LLMClient.
 Instantiate once and inject into ReviewLoop (and agent modules).
 """
 
+import logging
 import os
+import time
 
 import anthropic
 
 from config import MAX_TOKENS, MODEL
 from services.generation.base import LLMClient, LLMResponse
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeClient(LLMClient):
@@ -46,7 +50,19 @@ class ClaudeClient(LLMClient):
         if system:
             kwargs["system"] = system
 
-        msg = self._client.messages.create(**kwargs)
+        t0 = time.monotonic()
+        try:
+            msg = self._client.messages.create(**kwargs)
+        except Exception as exc:
+            ms = int((time.monotonic() - t0) * 1000)
+            logger.error("LLM call failed after %dms — %s", ms, exc)
+            raise
+
+        ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "model=%s in_tokens=%d out_tokens=%d dur=%dms",
+            self.model, msg.usage.input_tokens, msg.usage.output_tokens, ms,
+        )
         return LLMResponse(
             text=msg.content[0].text,
             model=self.model,

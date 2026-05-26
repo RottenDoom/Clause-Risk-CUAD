@@ -15,6 +15,7 @@ anthropic. This makes the loop testable with mock clients and provider-agnostic.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -82,16 +83,31 @@ class ReviewLoop:
                     f"Unknown clause family: {f!r}. Valid choices: {CLAUSE_FAMILIES}"
                 )
 
+        logger.info("contract_id=%s start families=%s", contract_id, run_families)
+        t_total = time.monotonic()
+
         cards: list[ClauseCard] = []
         for family in run_families:
-            logger.info("Processing family: %s", family)
+            t_fam = time.monotonic()
+            logger.info("contract_id=%s family=%s start", contract_id, family)
             result = self._process_family(contract_text, family)
+            elapsed = time.monotonic() - t_fam
             if result.card is not None:
                 cards.append(result.card)
+                logger.info(
+                    "contract_id=%s family=%s done (%.1fs) risk=%s",
+                    contract_id, family, elapsed,
+                    result.card.llm_generated_risk_rating,
+                )
             else:
-                logger.error("No card produced for family %s", family)
+                logger.error("contract_id=%s family=%s no card produced (%.1fs)", contract_id, family, elapsed)
 
-        return self._aggregate(contract_id, cards)
+        output = self._aggregate(contract_id, cards)
+        logger.info(
+            "contract_id=%s all done (%.1fs) overall_risk=%s",
+            contract_id, time.monotonic() - t_total, output.overall_risk_rating,
+        )
+        return output
 
     # ------------------------------------------------------------------
     # Step 1 — Clause Discovery

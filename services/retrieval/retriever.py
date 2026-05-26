@@ -17,7 +17,9 @@ We expose distance = 1 - score to match the ChromaDB convention used upstream.
 ChromaDB backup: services/retrieval/retriever_chroma.py
 """
 
+import logging
 import os
+import time
 from typing import Any
 
 from config import (
@@ -25,6 +27,8 @@ from config import (
     PRECEDENT_CONTRAST_FETCH_K,
     PRECEDENT_SIMILAR_TOP_K,
 )
+
+logger = logging.getLogger(__name__)
 
 # Pinecone metadata fields that hold the text — stored at upsert time
 # because Pinecone has no separate document store.
@@ -65,6 +69,7 @@ class Retriever:
         Over-fetches by 3x to allow the caller to deduplicate by contract_id.
         """
         fetch = min(n_results * 3, 100)
+        t0 = time.monotonic()
         try:
             response = self._index.query(
                 vector=embedding,
@@ -72,9 +77,11 @@ class Retriever:
                 namespace=family,
                 include_metadata=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.error("Pinecone query failed family=%s — %s", family, exc)
             return []
 
+        ms = int((time.monotonic() - t0) * 1000)
         output: list[dict[str, Any]] = []
         for match in response.matches:
             meta = match.metadata or {}
@@ -84,6 +91,7 @@ class Retriever:
                 "full_clause_text": meta.get(_FULL_CLAUSE_KEY, ""),
                 "distance": 1.0 - match.score,
             })
+        logger.debug("query family=%s fetched=%d returned=%d dur=%dms", family, fetch, len(output), ms)
         return output
 
     def query_for_contrast(
@@ -98,6 +106,7 @@ class Retriever:
         distance is None — not needed for contrast selection.
         """
         fetch = min(n_results, 100)
+        t0 = time.monotonic()
         try:
             response = self._index.query(
                 vector=embedding,
@@ -105,9 +114,11 @@ class Retriever:
                 namespace=family,
                 include_metadata=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.error("Pinecone contrast query failed family=%s — %s", family, exc)
             return []
 
+        ms = int((time.monotonic() - t0) * 1000)
         output: list[dict[str, Any]] = []
         for match in response.matches:
             meta = match.metadata or {}
@@ -117,6 +128,7 @@ class Retriever:
                 "full_clause_text": meta.get(_FULL_CLAUSE_KEY, ""),
                 "distance": None,
             })
+        logger.debug("query_for_contrast family=%s fetched=%d returned=%d dur=%dms", family, fetch, len(output), ms)
         return output
 
     def collection_count(self, family: str) -> int:

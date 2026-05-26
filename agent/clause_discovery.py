@@ -11,12 +11,15 @@ Interface:
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from config import (
     CHUNK_OVERLAP_WORDS,
     CHUNK_SIZE_WORDS,
@@ -189,7 +192,12 @@ def discover_clause(
 
     best_score = float(avg_scores.max())
     threshold = DISCOVERY_MIN_SCORE * 0.85 if broad else DISCOVERY_MIN_SCORE
+
     if best_score < threshold:
+        logger.info(
+            "family=%s broad=%s score=%.3f threshold=%.3f found=False",
+            clause_family, broad, best_score, threshold,
+        )
         return False, None, best_score
 
     # Take top-K chunks by averaged score
@@ -200,4 +208,8 @@ def discover_clause(
     all_words = contract_text.split()
     extracted = _merge_chunks(top_k_chunks, all_words)
 
+    logger.info(
+        "family=%s broad=%s score=%.3f threshold=%.3f found=True chunks=%d top_k=%d",
+        clause_family, broad, best_score, threshold, len(chunks), k,
+    )
     return True, extracted, best_score

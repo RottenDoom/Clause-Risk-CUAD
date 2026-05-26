@@ -15,11 +15,14 @@ Interface:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+logger = logging.getLogger(__name__)
 
 from config import MAX_TOKENS
 from agent.models import ClauseCard, ContrastingPrecedent, RiskLevel, SimilarPrecedent
@@ -108,6 +111,9 @@ def generate_risk_rating(
     )
 
     for attempt in range(2):
+        if attempt == 1:
+            logger.warning("family=%s risk rating retry (attempt 2)", clause_family)
+
         prompt = _build_prompt(
             clause_family,
             extracted_clause_text,
@@ -130,10 +136,13 @@ def generate_risk_rating(
             if isinstance(notes, str):
                 notes = [notes]
 
+            logger.info("family=%s risk=%s attempt=%d", clause_family, risk_level.value, attempt + 1)
             return risk_level, rationale, notes
 
-        except Exception:
+        except Exception as exc:
+            logger.warning("family=%s risk rating parse failure attempt=%d — %s", clause_family, attempt + 1, exc)
             if attempt == 1:
+                logger.error("family=%s risk rating failed after 2 attempts — degrading to None", clause_family)
                 return (
                     None,
                     None,
