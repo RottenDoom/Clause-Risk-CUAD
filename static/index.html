@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contract Risk Review</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10 9 9 9 8 9"/>
+  </svg>
+  <div>
+    <h1>Contract Risk Review</h1>
+    <p>Agentic clause analysis · CUAD · Claude API</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Input form ──────────────────────────────────────── -->
+  <div class="card" id="form-card">
+    <div class="tabs">
+      <button class="tab active" id="tab-paste" onclick="switchTab('paste')">Paste Text</button>
+      <button class="tab"        id="tab-file"  onclick="switchTab('file')">Upload File</button>
+    </div>
+
+    <!-- Paste mode -->
+    <div id="panel-paste">
+      <textarea id="contract-text" placeholder="Paste your contract text here…&#10;&#10;Minimum 300 characters. Must contain legal contract language."></textarea>
+      <div id="char-count" style="font-size:.75rem;color:var(--muted);margin-top:4px;text-align:right;">0 characters</div>
+    </div>
+
+    <!-- Upload mode -->
+    <div id="panel-file" style="display:none">
+      <div class="file-drop" id="file-drop" onclick="document.getElementById('file-input').click()">
+        <div class="icon">📄</div>
+        <div>Click to choose a file, or drag and drop</div>
+        <div class="hint">.txt files only — PDF not yet supported</div>
+        <input type="file" id="file-input" accept=".txt" />
+        <div class="file-name" id="file-name"></div>
+      </div>
+    </div>
+
+    <!-- Options -->
+    <div class="options-row">
+      <div class="option-group">
+        <label class="heading">Model</label>
+        <select id="model-select">
+          <option value="">Loading…</option>
+        </select>
+      </div>
+
+      <div class="option-group">
+        <label class="heading">Clause Families</label>
+        <div class="family-grid" id="family-grid">
+          <!-- populated by JS -->
+        </div>
+      </div>
+    </div>
+
+    <div class="submit-row">
+      <button class="btn btn-primary" id="submit-btn" onclick="submitReview()">
+        <span>Review Contract</span>
+        <span>→</span>
+      </button>
+      <span id="validation-error"></span>
+    </div>
+  </div>
+
+  <!-- ── Results ─────────────────────────────────────────── -->
+  <div id="results-section" style="display:none">
+
+    <!-- Status bar -->
+    <div class="status-bar pending" id="status-bar">
+      <div class="spinner" id="status-spinner" style="display:none"></div>
+      <span id="status-text">Waiting…</span>
+    </div>
+
+    <!-- Clause cards container -->
+    <div id="cards-container"></div>
+
+    <!-- Overall risk + summarize -->
+    <div class="card" id="summary-card" style="display:none">
+      <div class="overall-row">
+        <span class="overall-label">Overall Risk</span>
+        <span class="risk-badge" id="overall-badge">—</span>
+      </div>
+
+      <div id="summarize-section">
+        <button class="btn btn-secondary" id="summarize-btn" onclick="requestSummary()">
+          Generate Summary &amp; Red Flags
+        </button>
+        <div id="summary-output"></div>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
