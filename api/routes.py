@@ -25,16 +25,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from services.logging_setup import configure_logging
 
@@ -56,6 +58,12 @@ from services.retrieval.retriever import Retriever
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Contract Risk Review API", version="0.2.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend() -> FileResponse:
+    return FileResponse("static/index.html")
 
 
 @app.middleware("http")
@@ -79,10 +87,44 @@ _CONTRACT_RE = re.compile(
 _MIN_CONTRACT_CHARS = 300
 
 
+_embedder_ready = False
+
+
+def _prewarm_embedder() -> None:
+    """
+    Load and warm up the sentence-transformers model.
+
+    The FIRST encode() call after import triggers a heavy initialisation
+    (PyTorch JIT, tokenizer subprocesses, thread pool setup) that can take
+    1-3 MINUTES on WSL2 / slow disks — even with weights cached locally.
+    Subsequent calls are sub-second.
+
+    We do this synchronously during startup so the server doesn't accept
+    any /review requests until embeddings are actually fast.
+    """
+    global _embedder_ready
+    from agent.embedder import embed
+    t0 = time.monotonic()
+    logger.info("PREWARM: starting embedder load + warmup (this may take 1-3 minutes on first run)")
+    # Realistic-size warmup — exercises the full inference path, not just model load
+    embed(["This is a sample contract clause for warmup purposes."] * 4)
+    _embedder_ready = True
+    logger.info("PREWARM: embedder ready in %.2fs", time.monotonic() - t0)
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     global _retriever
+    t0 = time.monotonic()
+    logger.info("STARTUP: initialising Retriever")
     _retriever = Retriever()
+    logger.info("STARTUP: Retriever ready (%.2fs)", time.monotonic() - t0)
+    # BLOCK startup on prewarm — this prevents the user from submitting a job
+    # before the embedder is ready (which would then inherit the multi-minute
+    # first-call latency).
+    logger.info("STARTUP: awaiting embedder prewarm (server will not accept requests until this finishes)")
+    await asyncio.get_running_loop().run_in_executor(_executor, _prewarm_embedder)
+    logger.info("STARTUP: complete in %.2fs — ready for requests", time.monotonic() - t0)
 
 
 # ---------------------------------------------------------------------------
@@ -195,21 +237,27 @@ def _contract_id_from_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run_review(job_id: str, contract_text: str) -> None:
+async def _run_review_async(job_id: str, contract_text: str) -> None:
+    """
+    Async background task: runs the review pipeline with families in parallel.
+    Pushes each ClauseCard to job.stream_queue as it completes (SSE streaming).
+    """
     job = _jobs[job_id]
     job.status = JobStatus.running
+    job.stream_queue = asyncio.Queue()
     t0 = time.monotonic()
     logger.info(
-        "job_id=%s contract_id=%s families=%s model=%s: starting",
+        "job_id=%s contract_id=%s families=%s model=%s: starting (parallel)",
         job_id, job.contract_id, job.families, job.model,
     )
     try:
         llm = ClaudeClient(model=job.model)
-        loop = ReviewLoop(llm_client=llm, retriever=_retriever)
-        output: ContractReviewOutput = loop.run(
+        review_loop = ReviewLoop(llm_client=llm, retriever=_retriever)
+        output: ContractReviewOutput = await review_loop.run_async(
             contract_text,
             contract_id=job.contract_id,
             families=job.families,
+            stream_queue=job.stream_queue,
         )
         json_path = write_json(output)
         html_path = render_html(output)
@@ -217,12 +265,18 @@ def _run_review(job_id: str, contract_text: str) -> None:
         job.result = output.model_dump()
         job.html_path = str(html_path)
         job.status = JobStatus.done
-        logger.info("job_id=%s done (%.1fs) overall_risk=%s", job_id, time.monotonic() - t0, output.overall_risk_rating)
+        logger.info(
+            "job_id=%s done (%.1fs) overall_risk=%s",
+            job_id, time.monotonic() - t0, output.overall_risk_rating,
+        )
     except Exception as exc:
         elapsed = time.monotonic() - t0
         logger.error("job_id=%s failed after %.1fs — %s", job_id, elapsed, exc, exc_info=True)
         job.status = JobStatus.failed
         job.error = str(exc)
+        # Unblock any waiting SSE client
+        if job.stream_queue:
+            await job.stream_queue.put(None)
 
 @app.post("/review", response_model=SubmitResponse, status_code=202)
 async def submit_review(
@@ -291,8 +345,7 @@ async def submit_review(
         job_id, contract_id, len(contract_text), chosen_families, chosen_model,
     )
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(_executor, _run_review, job_id, contract_text)
+    asyncio.create_task(_run_review_async(job_id, contract_text))
 
     return SubmitResponse(
         job_id=job_id,
@@ -322,6 +375,69 @@ async def get_review(job_id: str) -> StatusResponse:
         error=job.error,
         result=job.result if job.status == JobStatus.done else None,
     )
+
+
+@app.get("/review/{job_id}/stream")
+async def stream_review(job_id: str) -> StreamingResponse:
+    """
+    SSE stream for a review job.
+
+    Events emitted:
+      data: {"type": "card",   "card": {...ClauseCard...}, "overall_risk": null}
+      data: {"type": "done",   "overall_risk": "high"}
+      data: {"type": "error",  "message": "..."}
+
+    Clients open with:  new EventSource(`/review/${jobId}/stream`)
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found.")
+
+    async def _generate() -> AsyncGenerator[str, None]:
+        # Wait up to 30s for the background task to create the queue
+        deadline = time.monotonic() + 30
+        while job.stream_queue is None:
+            if time.monotonic() > deadline:
+                yield _sse({"type": "error", "message": "Job did not start in time."})
+                return
+            await asyncio.sleep(0.2)
+
+        # Stream cards as they arrive; None sentinel = done.
+        # 10-minute idle timeout — generous because Haiku rate limits can stretch
+        # individual LLM calls to multiple minutes under load.
+        while True:
+            try:
+                item = await asyncio.wait_for(job.stream_queue.get(), timeout=600.0)
+            except asyncio.TimeoutError:
+                yield _sse({"type": "error", "message": "Stream timed out."})
+                return
+
+            if item is None:
+                # All families done
+                if job.status == JobStatus.failed:
+                    yield _sse({"type": "error", "message": job.error or "Pipeline failed."})
+                else:
+                    yield _sse({
+                        "type": "done",
+                        "overall_risk": job.result.get("overall_risk_rating") if job.result else None,
+                    })
+                return
+
+            # item is a ClauseCard pydantic object
+            yield _sse({"type": "card", "card": item.model_dump()})
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
 
 
 @app.get("/review/{job_id}/report", response_class=HTMLResponse)
@@ -396,5 +512,9 @@ async def list_families() -> dict[str, Any]:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    return {
+        "status": "ok" if _embedder_ready else "warming_up",
+        "embedder_ready": _embedder_ready,
+        "retriever_ready": _retriever is not None,
+    }

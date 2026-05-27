@@ -82,6 +82,7 @@ class ClauseCard(BaseModel):
     llm_generated_risk_rating: Optional[RiskLevel]
     risk_rationale: Optional[str]
     confidence_uncertainty_notes: List[str]
+    discovery_score: float = 0.0
 
 
 class ContractReviewOutput(BaseModel):

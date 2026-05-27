@@ -160,6 +160,7 @@ def generate_risk_card(
     contrasting: list[ContrastingPrecedent],
     llm: LLMClient,
     structured_interpretation: Optional[dict] = None,
+    discovery_score: float = 0.0,
 ) -> ClauseCard:
     """
     Convenience wrapper called by loop.py. Runs interpret_clause (if needed)
@@ -191,4 +192,5 @@ def generate_risk_card(
         llm_generated_risk_rating=risk_level,
         risk_rationale=rationale,
         confidence_uncertainty_notes=notes,
+        discovery_score=discovery_score,
     )

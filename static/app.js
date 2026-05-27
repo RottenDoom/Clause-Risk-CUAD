@@ -2,7 +2,8 @@
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentJobId   = null;
-let pollTimer      = null;
+let pollTimer      = null;   // kept for fallback health checks only
+let eventSource    = null;
 let activeTab      = 'paste';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -168,61 +169,88 @@ async function submitReview() {
     }
     const data = await res.json();
     currentJobId = data.job_id;
-    startPolling();
+    startStreaming();
   } catch (err) {
     setValidationError(err.message);
     setSubmitting(false);
   }
 }
 
-// ── Polling ───────────────────────────────────────────────────────────────────
-function startPolling() {
+// ── Streaming (SSE) ───────────────────────────────────────────────────────────
+function startStreaming() {
   showResultsSection();
-  setStatus('pending', 'Job queued…');
-  pollTimer = setInterval(poll, 2500);
+  setStatus('running', 'Starting review pipeline…');
+
+  if (eventSource) eventSource.close();
+
+  eventSource = new EventSource(`/review/${currentJobId}/stream`);
+
+  eventSource.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+
+    if (msg.type === 'card') {
+      appendClauseCard(msg.card);
+      const family = (msg.card.clause_family || '').replace(/_/g, ' ');
+      setStatus('running', `Received ${family} clause…`);
+    } else if (msg.type === 'done') {
+      eventSource.close();
+      finishReview(msg.overall_risk);
+    } else if (msg.type === 'error') {
+      eventSource.close();
+      setStatus('failed', `Failed: ${msg.message || 'unknown error'}`);
+      setSubmitting(false);
+    }
+  };
+
+  eventSource.onerror = () => {
+    // Connection dropped unexpectedly — fall back to polling the status endpoint
+    eventSource.close();
+    if (currentJobId) pollTimer = setInterval(fallbackPoll, 2500);
+  };
 }
 
-async function poll() {
+async function fallbackPoll() {
   try {
     const data = await apiFetch(`/review/${currentJobId}`);
-    switch (data.status) {
-      case 'pending':  setStatus('pending', 'Queued — waiting for worker…'); break;
-      case 'running':  setStatus('running', 'Running review pipeline…');     break;
-      case 'done':
-        clearInterval(pollTimer);
-        setStatus('done', 'Review complete.');
-        renderResults(data.result);
-        setSubmitting(false);
-        break;
-      case 'failed':
-        clearInterval(pollTimer);
-        setStatus('failed', `Failed: ${data.error || 'unknown error'}`);
-        setSubmitting(false);
-        break;
+    if (data.status === 'done') {
+      clearInterval(pollTimer);
+      renderResults(data.result);
+      setStatus('done', 'Review complete.');
+      setSubmitting(false);
+    } else if (data.status === 'failed') {
+      clearInterval(pollTimer);
+      setStatus('failed', `Failed: ${data.error || 'unknown error'}`);
+      setSubmitting(false);
     }
   } catch (err) {
-    // Network hiccup — keep polling
-    console.warn('Poll error:', err);
+    console.warn('Fallback poll error:', err);
   }
 }
 
-// ── Render results ────────────────────────────────────────────────────────────
-function renderResults(result) {
+function appendClauseCard(card) {
   const container = document.getElementById('cards-container');
-  container.innerHTML = '';
+  const el = buildClauseCard(card);
+  el.classList.add('card-stream-in');
+  container.appendChild(el);
+}
 
-  (result.clause_cards || []).forEach(card => {
-    container.appendChild(buildClauseCard(card));
-  });
-
-  // Overall risk
-  const badge   = document.getElementById('overall-badge');
-  const risk    = result.overall_risk_rating || 'none';
+function finishReview(overallRisk) {
+  const risk  = overallRisk || 'none';
+  const badge = document.getElementById('overall-badge');
   badge.textContent = risk.toUpperCase();
   badge.className   = `risk-badge ${risk}`;
   document.getElementById('summary-card').style.display = '';
+  setStatus('done', 'Review complete.');
+  setSubmitting(false);
+}
 
-  // Pre-fill summary if already present (e.g., re-loaded job)
+// ── Render results (used by fallback poll only) ───────────────────────────────
+function renderResults(result) {
+  const container = document.getElementById('cards-container');
+  container.innerHTML = '';
+  (result.clause_cards || []).forEach(card => container.appendChild(buildClauseCard(card)));
+  finishReview(result.overall_risk_rating);
   if (result.overall_summary) {
     renderSummaryData({ overall_summary: result.overall_summary, top_red_flags: result.top_red_flags });
   }

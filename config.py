@@ -72,6 +72,13 @@ SPLIT_SEED = 42
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
+# Model weights cache.
+#
+# IMPORTANT: must be on a NATIVE Linux filesystem, not on /mnt/... (Windows mount
+# under WSL). PyTorch mmap-loads the safetensors file and cross-filesystem
+# mmap on WSL2 is glacially slow (1-2 min vs. ~1s native).
+# Default to the standard HuggingFace location under $HOME.
+MODELS_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
 # ---------------------------------------------------------------------------
 # Chunking

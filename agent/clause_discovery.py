@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -173,16 +175,28 @@ def discover_clause(
     if clause_family not in CLAUSE_FAMILIES:
         raise ValueError(f"Unknown clause family: {clause_family!r}")
 
+    tid = threading.get_ident()
+    t_entry = time.monotonic()
     anchors = BROAD_ANCHOR_QUERIES[clause_family] if broad else ANCHOR_QUERIES[clause_family]
     chunks = _chunk_contract(contract_text)
+    logger.info(
+        "discover[t%d] family=%s broad=%s chunked n_chunks=%d (%.2fs)",
+        tid, clause_family, broad, len(chunks), time.monotonic() - t_entry,
+    )
     if not chunks:
         return False, None, 0.0
 
     chunk_texts = [c[2] for c in chunks]
 
     # Embed all chunks and all anchor queries in two batches
+    t_emb = time.monotonic()
     chunk_embs = embed(chunk_texts)          # (n_chunks, dim)
+    logger.info("discover[t%d] family=%s embedded chunks (%.2fs)",
+                tid, clause_family, time.monotonic() - t_emb)
+    t_emb2 = time.monotonic()
     anchor_embs = embed(anchors)             # (n_anchors, dim)
+    logger.info("discover[t%d] family=%s embedded anchors (%.2fs)",
+                tid, clause_family, time.monotonic() - t_emb2)
 
     # Similarity matrix: (n_anchors, n_chunks); dot product == cosine since L2-normalised
     sim_matrix = anchor_embs @ chunk_embs.T  # (n_anchors, n_chunks)

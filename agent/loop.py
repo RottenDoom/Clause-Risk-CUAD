@@ -14,10 +14,12 @@ All LLM calls go through the injected LLMClient; the loop itself never imports
 anthropic. This makes the loop testable with mock clients and provider-agnostic.
 """
 
+import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 from agent.models import ClauseCard, ContractReviewOutput
 from config import CLAUSE_FAMILIES
@@ -109,6 +111,89 @@ class ReviewLoop:
         )
         return output
 
+    async def run_async(
+        self,
+        contract_text: str,
+        contract_id: str,
+        families: list[str] | None = None,
+        stream_queue: Optional[Any] = None,
+    ) -> ContractReviewOutput:
+        """
+        Parallel version of run(): processes all clause families concurrently.
+
+        Each family runs in its own thread (via run_in_executor). When
+        stream_queue is provided (an asyncio.Queue), each ClauseCard is pushed
+        to it as soon as that family finishes — enabling SSE streaming to the
+        frontend. A None sentinel is pushed when all families are done.
+
+        Wall time ≈ slowest single family instead of sum of all families.
+        The sync run() is kept for the CLI (scripts/run_review.py).
+        """
+        run_families = families if families else CLAUSE_FAMILIES
+        for f in run_families:
+            if f not in CLAUSE_FAMILIES:
+                raise ValueError(
+                    f"Unknown clause family: {f!r}. Valid choices: {CLAUSE_FAMILIES}"
+                )
+
+        logger.info(
+            "contract_id=%s start families=%s (parallel)", contract_id, run_families
+        )
+        t_total = time.monotonic()
+        event_loop = asyncio.get_running_loop()
+
+        cards: list[ClauseCard] = []
+
+        with ThreadPoolExecutor(max_workers=len(run_families)) as pool:
+            future_to_family = {
+                event_loop.run_in_executor(
+                    pool, self._process_family, contract_text, family
+                ): family
+                for family in run_families
+            }
+
+            # asyncio.wait preserves the original future objects (unlike as_completed),
+            # so we can map each completed future back to its family name.
+            pending = set(future_to_family.keys())
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for fut in done:
+                    family = future_to_family[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        logger.error(
+                            "contract_id=%s family=%s unhandled exception: %s",
+                            contract_id, family, exc, exc_info=True,
+                        )
+                        continue
+
+                    if result.card is not None:
+                        cards.append(result.card)
+                        logger.info(
+                            "contract_id=%s family=%s done risk=%s",
+                            contract_id, family, result.card.llm_generated_risk_rating,
+                        )
+                        if stream_queue is not None:
+                            await stream_queue.put(result.card)
+                    else:
+                        logger.error(
+                            "contract_id=%s family=%s no card produced", contract_id, family
+                        )
+
+        output = self._aggregate(contract_id, cards)
+        logger.info(
+            "contract_id=%s all done (%.1fs) overall_risk=%s",
+            contract_id, time.monotonic() - t_total, output.overall_risk_rating,
+        )
+
+        if stream_queue is not None:
+            await stream_queue.put(None)  # sentinel: stream complete
+
+        return output
+
     # ------------------------------------------------------------------
     # Step 1 — Clause Discovery
     # ------------------------------------------------------------------
@@ -196,6 +281,7 @@ class ReviewLoop:
             similar=result.similar_precedents,
             contrasting=result.contrasting_precedents,
             llm=self.llm,
+            discovery_score=result.discovery_score,
         )
         result.card = card
         return result
@@ -230,7 +316,20 @@ class ReviewLoop:
 
     def _process_family(self, contract_text: str, family: str) -> StepResult:
         """Run Steps 1->3 for a single clause family."""
+        t0 = time.monotonic()
+
+        logger.info("family=%s step=1/discover starting", family)
         result = self._step1_discover(contract_text, family)
+        logger.info("family=%s step=1/discover done clause_found=%s score=%.3f (%.1fs)",
+                    family, result.clause_found, result.discovery_score, time.monotonic() - t0)
+
+        logger.info("family=%s step=2/retrieve starting", family)
         result = self._step2_retrieve(result)
+        logger.info("family=%s step=2/retrieve done similar=%d contrasting=%d (%.1fs)",
+                    family, len(result.similar_precedents), len(result.contrasting_precedents), time.monotonic() - t0)
+
+        logger.info("family=%s step=3/interpret starting", family)
         result = self._step3_interpret(result)
+        logger.info("family=%s step=3/interpret done (%.1fs)", family, time.monotonic() - t0)
+
         return result

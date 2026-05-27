@@ -129,6 +129,29 @@ def test_clause_card_not_found():
     assert card.similar_precedents == []
 
 
+def test_clause_card_has_discovery_score():
+    card = ClauseCard(
+        clause_family="assignment", clause_found=True,
+        extracted_clause_text="text", structured_interpretation={},
+        similar_precedents=[], contrasting_precedents=[],
+        llm_generated_risk_rating=None, risk_rationale=None,
+        confidence_uncertainty_notes=[],
+    )
+    assert hasattr(card, "discovery_score")
+    assert card.discovery_score == 0.0
+
+
+def test_clause_card_discovery_score_stored():
+    card = ClauseCard(
+        clause_family="termination", clause_found=True,
+        extracted_clause_text="text", structured_interpretation={},
+        similar_precedents=[], contrasting_precedents=[],
+        llm_generated_risk_rating=None, risk_rationale=None,
+        confidence_uncertainty_notes=[], discovery_score=0.72,
+    )
+    assert card.discovery_score == 0.72
+
+
 def test_contract_review_output_serializes():
     cards = [
         _make_clause_card("assignment"),

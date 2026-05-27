@@ -1,3 +1,4 @@
+import asyncio
 from pydantic import BaseModel
 from typing import Any, Optional
 from config import MODEL
@@ -15,6 +16,8 @@ class JobStatus(str, Enum):
 
 
 class Job(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
     job_id: str
     status: JobStatus = JobStatus.pending
     contract_id: str = ""
@@ -23,6 +26,8 @@ class Job(BaseModel):
     error: Optional[str] = None
     result: Optional[dict[str, Any]] = None
     html_path: Optional[str] = None
+    # SSE streaming: background task pushes (family, card_dict) or sentinel None
+    stream_queue: Optional[asyncio.Queue] = None
 
 # ---------------------------------------------------------------------------
 # Response schemas

@@ -17,7 +17,9 @@ output/html/
 
 # HuggingFace / torch caches that may land in project dir
 .cache/
+models/
 
 # OS
 .DS_Store
 Thumbs.db
+models/
