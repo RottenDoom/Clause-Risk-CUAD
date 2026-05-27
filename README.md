@@ -318,13 +318,60 @@ CONTRACT_FILE=data/test/SomeContract.txt ./scripts/test_api.sh
 
 ## Evaluation
 
-After reviewing all 20 test contracts:
+The project ships with a multi-stage benchmark suite grounded in published legal-retrieval benchmarks: **CUAD** (clause discovery), **ACORD** (retrieval), **ContractEval** (F2, laziness rate, LLM-as-judge), and **LegalBench-RAG** (nDCG/MRR thresholds). See [`GUIDE.md`](./GUIDE.md) for the full metric definitions and reasoning behind each one.
+
+### Run the evaluation
 
 ```bash
-python3 scripts/evaluate.py
+# Prereq: pipeline outputs must exist for the 20 held-out test contracts
+python3 scripts/run_review.py --all-test
+
+# Quick mode — no LLM calls, ~5 seconds
+python3 scripts/evaluate.py --quick
+
+# Full mode — adds LLM-as-judge (1 API call per found clause card)
+python3 scripts/evaluate.py --full
+
+# A single stage only (useful when debugging one metric family)
+python3 scripts/evaluate.py --stage discovery
+python3 scripts/evaluate.py --stage retrieval
+python3 scripts/evaluate.py --stage interpretation
+python3 scripts/evaluate.py --stage risk
 ```
 
-Targets:
+Results stream to `output/eval/results.json` and a stdout table:
+
+```
+==========================================================
+  CONTRACT REVIEW PIPELINE — EVALUATION RESULTS
+==========================================================
+  Metric                          Value    Target   Pass
+----------------------------------------------------------
+  Accuracy                       0.875      0.70    ✓
+  Precision                      0.875      0.60    ✓
+  Recall                         1.000      0.65    ✓
+  F1                             0.933       N/A    —
+  F2                             0.972       N/A    —
+  P@80% Recall                   1.000       N/A    —
+  Recall@3                       1.000       N/A    —
+  MRR                            1.000      0.40    ✓
+  nDCG@3                         1.000      0.70    ✓
+  Field completeness             1.000       N/A    —
+  Heuristic agree %              0.750       N/A    —
+==========================================================
+```
+
+### Stages and what they measure
+
+| Stage | What it scores | Key metrics |
+|-------|----------------|-------------|
+| **1. Clause Discovery** | Did we find the clause at all? | Accuracy, Precision, Recall, F1, F2 (recall-weighted), Laziness Rate, P@80%Recall |
+| **2. Precedent Retrieval** | Are the retrieved precedents relevant? | Recall@3, MRR, nDCG@3, avg semantic similarity |
+| **3. Interpretation** | Did the LLM populate all structured fields? | Field completeness rate (per family + overall) |
+| **4a. Risk Rating (heuristic)** | Does the LLM rating match a deterministic rule-based label? | Heuristic agreement % |
+| **4b. Risk Rating (LLM-judge)** | Is the rating + rationale defensible? | Avg judge score (1–5), pass %, Jaccard similarity |
+
+Targets (from CLAUDE.md):
 
 | Metric | Target |
 |--------|--------|
@@ -333,8 +380,108 @@ Targets:
 | Clause Discovery Precision | > 0.60 |
 | Risk Distribution | Not all same level |
 
+### Results showcase
+
+Generated from `notebooks/eval_analysis.ipynb` after running `scripts/evaluate.py --quick`.
+
+**Stage 1 — Clause Discovery** (all targets met):
+
+![Stage 1 Clause Discovery Metrics](docs/images/stage1_clause_discovery.png)
+
+**Stage 2 — Retrieval Quality** (production-grade per LegalBench-RAG thresholds — MRR > 0.40, nDCG > 0.70):
+
+![Stage 2 Retrieval Quality](docs/images/stage2_retrieval.png)
+
+**Stage 4 — Risk Distribution** across all cards (not collapsed onto a single level — passes the variance sanity check):
+
+![Risk Rating Distribution](docs/images/stage4_risk_distribution.png)
+
 ---
 
+## Testing
+
+The repo has 70+ unit tests covering both pipeline modules and evaluation metrics. See [`GUIDE.md`](./GUIDE.md) for a more detailed test-writing reference.
+
+### Running the test suite
+
+```bash
+# Everything
+python3 -m pytest tests/ -v
+
+# Evaluation metrics only (fast, no embeddings loaded)
+python3 -m pytest tests/eval/ -v
+
+# A single test file
+python3 -m pytest tests/eval/test_clause_discovery.py -v
+
+# A single test by name
+python3 -m pytest tests/eval/test_clause_discovery.py::test_precision_at_80_recall_achievable -v
+
+# Show full failure output
+python3 -m pytest tests/ --tb=short
+
+# Stop at first failure
+python3 -m pytest tests/ -x
+```
+
+### What each test suite covers
+
+| File | Coverage |
+|------|----------|
+| `tests/test_models.py` | Pydantic schemas — instantiation, serialisation round-trip |
+| `tests/test_interpretation.py` | Per-family interpretation extraction with mocked LLM |
+| `tests/test_risk_rating.py` | Risk rating generation, JSON retry path, graceful degradation |
+| `tests/eval/test_loader.py` | `EvalRecord` loading from output JSONs + annotation files (only module permitted to read `test_annotations.json`) |
+| `tests/eval/test_clause_discovery.py` | Stage 1 metrics with a hand-built TP=3, FP=1, FN=1, TN=1 fixture; P@80R achievable + unachievable cases |
+| `tests/eval/test_retrieval.py` | Recall@3, MRR ranks 1/2/none, nDCG@3 perfect + partial (hand-computed expected values), clause-not-found skipping |
+| `tests/eval/test_interpretation.py` | Full + partial completeness, per-family breakdown |
+| `tests/eval/test_risk_rating.py` | Heuristic rules per family, agreement %, LLM-judge with MockLLM, Jaccard similarity |
+| `tests/eval/test_report.py` | JSON writer, stdout table contents, end-to-end CLI smoke-test (subprocess + empty json dir → exit 0) |
+
+### End-to-end API test
+
+After starting the server, run a real submission + SSE stream against any test contract:
+
+```bash
+./scripts/test_api.sh
+
+# Or with a specific contract / model / family
+CONTRACT_FILE=data/test/SomeContract.txt MODEL=claude-haiku-4-5-20251001 FAMILIES=termination ./scripts/test_api.sh
+```
+
+### Writing new evaluation tests
+
+The pattern is always: build a minimal `EvalRecord`, call `compute_metrics`, assert. Copy this template:
+
+```python
+from scripts.eval.loader import EvalRecord
+
+def _make_record(**overrides) -> EvalRecord:
+    defaults = dict(
+        contract_id="C1", family="assignment",
+        gt_clause_present=True, gt_clause_text="text",
+        clause_found=True, extracted_clause_text="text",
+        structured_interpretation=None, similar_contract_ids=[],
+        llm_generated_risk_rating=None, risk_rationale=None,
+        relevant_reference_ids=frozenset(),
+    )
+    return EvalRecord(**{**defaults, **overrides})
+
+def test_my_metric():
+    from scripts.eval.clause_discovery import compute_metrics
+    records = [_make_record(gt_clause_present=True, clause_found=True)]
+    m = compute_metrics(records)
+    assert m.precision == pytest.approx(1.0)
+```
+
+### Debugging a metric that looks wrong
+
+1. **Isolate the stage** with `--stage <name>` so only that metric is computed.
+2. **Inspect `output/eval/results.json`** — the raw numbers are there.
+3. **Check the output JSONs** in `output/json/` — `discovery_score` must be populated for `P@80R` to be computable.
+4. **Re-index** if retrieval looks off: `python3 scripts/build_index.py`.
+
+---
 
 ## Configuration
 
@@ -356,6 +503,6 @@ All tunable constants live in `config.py`. The most commonly adjusted:
 | Issue | Workaround |
 |-------|-----------|
 | PDF ingestion not supported | Convert to `.txt` before submitting |
-| Job state lost on server restart | Restart clears all in-flight and completed jobs |
-| Families processed sequentially | Run single-family reviews if latency is critical |
-| Embedding anchors re-computed each run | Anchor embeddings are not cached between requests |
+| Job state lost on server restart | The frontend now responds but your initial prompt is gone |
+| Families processed sequentially | There is parallelism while keeping the rate limits in check|
+| Embedding anchors re-computed each run | Fixed |
