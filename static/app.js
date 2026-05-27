@@ -7,6 +7,8 @@ let eventSource    = null;
 let activeTab      = 'paste';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+const JOB_STORAGE_KEY = 'contractReview.lastJobId';
+
 document.addEventListener('DOMContentLoaded', () => {
   loadModels();
   loadFamilies();
@@ -16,7 +18,31 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('char-count').textContent =
       `${e.target.value.length} characters`;
   });
+
+  // Restore an in-progress or recently completed job after page reload
+  const savedJobId = localStorage.getItem(JOB_STORAGE_KEY);
+  if (savedJobId) restoreJob(savedJobId);
 });
+
+async function restoreJob(jobId) {
+  try {
+    const data = await apiFetch(`/review/${jobId}`);
+    currentJobId = jobId;
+    if (data.status === 'done') {
+      showResultsSection();
+      renderResults(data.result);
+    } else if (data.status === 'failed') {
+      localStorage.removeItem(JOB_STORAGE_KEY);
+    } else {
+      // pending / running — resume the SSE stream
+      setSubmitting(true);
+      startStreaming();
+    }
+  } catch (err) {
+    // Job not found (server restarted, etc.) — drop the stale id
+    localStorage.removeItem(JOB_STORAGE_KEY);
+  }
+}
 
 // ── Catalogue loaders ─────────────────────────────────────────────────────────
 async function loadModels() {
@@ -169,6 +195,7 @@ async function submitReview() {
     }
     const data = await res.json();
     currentJobId = data.job_id;
+    localStorage.setItem(JOB_STORAGE_KEY, currentJobId);
     startStreaming();
   } catch (err) {
     setValidationError(err.message);
@@ -198,6 +225,7 @@ function startStreaming() {
       finishReview(msg.overall_risk);
     } else if (msg.type === 'error') {
       eventSource.close();
+      localStorage.removeItem(JOB_STORAGE_KEY);
       setStatus('failed', `Failed: ${msg.message || 'unknown error'}`);
       setSubmitting(false);
     }

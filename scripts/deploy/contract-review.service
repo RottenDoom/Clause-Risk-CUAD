@@ -21,16 +21,26 @@ WorkingDirectory=/home/ubuntu/contract-review
 # All API keys are loaded from this file — never hardcode them above.
 EnvironmentFile=/home/ubuntu/contract-review/.env
 
-# 2 workers: one handles the long review job, one stays responsive for polling.
-# Increase to 4 on t3.medium if you see queueing.
+# Single worker is REQUIRED:
+#   - Each worker loads the sentence-transformers model independently (~4 min
+#     first-time cost per process).
+#   - In-memory job state (_jobs dict, asyncio.Queues used for SSE) is not
+#     shared across workers, so an SSE stream connection may land on a
+#     different worker than the one running the job.
+# Scale up by running multiple machines behind a load balancer with
+# sticky-session routing instead.
 ExecStart=/home/ubuntu/contract-review/venv/bin/uvicorn \
     api.routes:app \
     --host 127.0.0.1 \
     --port 8000 \
-    --workers 2
+    --workers 1
 
 Restart=always
 RestartSec=5
+# Startup blocks on a synchronous embedder prewarm (3-4 min on cold caches).
+# Default 90s timeout would kill us mid-load.
+TimeoutStartSec=600
+TimeoutStopSec=30
 
 # Log to journald — read with: journalctl -u contract-review -f
 StandardOutput=journal

@@ -70,9 +70,16 @@ EOF
 fi
 
 # ── 6. Required output directories ───────────────────────────────────────────
-mkdir -p "$APP_DIR/output/json" "$APP_DIR/output/html"
+mkdir -p "$APP_DIR/output/json" "$APP_DIR/output/html" "$APP_DIR/output/logs"
 
 # ── 7. Systemd service ───────────────────────────────────────────────────────
+# IMPORTANT:
+#   --workers 1 — each worker would load its own 4-min embedder AND have its
+#                 own in-memory _jobs dict (SSE stream might land on a
+#                 different worker than the job).
+#   TimeoutStartSec=600 — startup blocks on the synchronous embedder prewarm
+#                         which takes 3-4 minutes on cold caches; systemd's
+#                         default 90s timeout would SIGTERM us mid-load.
 echo "==> Installing systemd service..."
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
@@ -83,9 +90,11 @@ After=network.target
 User=ubuntu
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${APP_DIR}/.env
-ExecStart=${APP_DIR}/venv/bin/uvicorn api.routes:app --host 127.0.0.1 --port ${APP_PORT} --workers 2
+ExecStart=${APP_DIR}/venv/bin/uvicorn api.routes:app --host 127.0.0.1 --port ${APP_PORT} --workers 1
 Restart=always
 RestartSec=5
+TimeoutStartSec=600
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -95,6 +104,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable ${SERVICE_NAME}
 
 # ── 8. Nginx config ──────────────────────────────────────────────────────────
+# SSE-aware configuration:
+#   proxy_buffering off            — required, otherwise nginx holds the SSE
+#                                    stream until the buffer fills and the
+#                                    frontend never sees individual cards
+#   proxy_http_version 1.1 + ""    — proper keep-alive for long-lived streams
+#   proxy_read_timeout 600s        — matches the SSE idle timeout in routes.py
 echo "==> Writing nginx config..."
 sudo tee /etc/nginx/sites-available/${SERVICE_NAME} > /dev/null <<EOF
 server {
@@ -103,12 +118,30 @@ server {
 
     client_max_body_size 10M;
 
+    # Main app
     location / {
         proxy_pass         http://127.0.0.1:${APP_PORT};
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_read_timeout 120s;             # review jobs can be slow
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+    }
+
+    # SSE streaming endpoint — disable buffering so events flush instantly
+    location ~ ^/review/.+/stream$ {
+        proxy_pass         http://127.0.0.1:${APP_PORT};
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        chunked_transfer_encoding off;
     }
 }
 EOF
@@ -118,16 +151,26 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 
+# ── 9. Pre-download + warm the embedder ──────────────────────────────────────
+# Pulls the sentence-transformers model into ~/.cache/huggingface and warms
+# the OS page cache. Without this, the FIRST systemd start blocks ~4 minutes
+# inside the prewarm step.
+echo "==> Pre-downloading + warming the embedding model (one-time, may take a few minutes)..."
+cd "$APP_DIR"
+source venv/bin/activate
+python3 -c "from agent.embedder import embed; embed(['warmup sentence']); print('embedder ready')" || \
+    echo "WARNING: embedder warmup failed — first service start will be slow but should still work."
+
 echo ""
 echo "==> Setup complete."
 echo ""
 echo "Next steps:"
 echo "  1. Edit .env:       nano ${APP_DIR}/.env"
-echo "  2. Populate index:  cd ${APP_DIR} && source venv/bin/activate"
-echo "                      python3 scripts/prepare_data.py   # if data not pre-built"
-echo "                      python3 scripts/build_index.py --pinecone"
-echo "                      python3 scripts/build_index.py --chromadb   # optional"
+echo "  2. Populate data:   cd ${APP_DIR} && source venv/bin/activate"
+echo "                      python3 scripts/prepare_data.py    # 80/20 split"
+echo "                      python3 scripts/build_index.py     # upserts to Pinecone"
 echo "  3. Start service:   sudo systemctl start ${SERVICE_NAME}"
+echo "                      # Watch logs and wait for 'STARTUP: complete' before testing."
 echo "  4. Check logs:      journalctl -u ${SERVICE_NAME} -f"
 echo "  5. HTTPS (optional):sudo apt install certbot python3-certbot-nginx -y"
 echo "                      sudo certbot --nginx -d yourdomain.com"
