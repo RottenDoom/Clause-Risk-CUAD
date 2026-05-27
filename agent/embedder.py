@@ -23,10 +23,10 @@ from config import EMBEDDING_MODEL, MODELS_CACHE_DIR
 # Force offline mode so HuggingFace doesn't try to phone home for update checks.
 # If the model files exist locally, load is instant; otherwise the user must
 # download the model first (one-time, via build_index.py or by deleting the
-# HF_HUB_OFFLINE flag).
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-os.environ.setdefault("HF_HOME", str(MODELS_CACHE_DIR))
+# HF_HUB_OFFLINE flag). TODO: put these in setup if necessary
+# os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# os.environ.setdefault("HF_HOME", str(MODELS_CACHE_DIR))
 
 logger = logging.getLogger(__name__)
 
