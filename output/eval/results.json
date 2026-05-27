@@ -1,0 +1,43 @@
+{
+  "clause_discovery": {
+    "accuracy": 0.875,
+    "precision": 0.875,
+    "recall": 1.0,
+    "f1": 0.9333333333333333,
+    "f2": 0.9722222222222222,
+    "laziness_rate": 0.0,
+    "precision_at_80_recall": 1.0,
+    "tp": 7,
+    "fp": 1,
+    "fn": 0,
+    "tn": 0,
+    "n_records": 8
+  },
+  "retrieval": {
+    "recall_at_3": 1.0,
+    "mrr": 1.0,
+    "ndcg_at_3": 1.0,
+    "avg_semantic_sim": 0.5775808170437813,
+    "n_queries": 8
+  },
+  "interpretation": {
+    "field_completeness_rate": 1.0,
+    "per_family_completeness": {
+      "termination": 1.0,
+      "assignment": 1.0,
+      "change_of_control": 1.0,
+      "exclusivity": 1.0
+    },
+    "n_evaluated": 8
+  },
+  "risk_rating": {
+    "heuristic": {
+      "heuristic_agreement_pct": 0.75,
+      "n_compared": 8
+    },
+    "avg_judge_score": 4.0,
+    "avg_jaccard_sim": 0.15460481101434137,
+    "judge_pass_pct": 0.875,
+    "n_judged": 8
+  }
+}

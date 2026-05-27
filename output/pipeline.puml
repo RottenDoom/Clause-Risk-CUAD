@@ -1,0 +1,146 @@
+@startuml Contract Review Agent Pipeline
+!theme plain
+skinparam defaultFontSize 12
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam maxMessageSize 200
+skinparam sequenceGroupBorderThickness 1.5
+
+title Contract Review Agent — Full Pipeline\n(per contract, 4 clause families)
+
+actor        "CLI / API"        as CLI
+participant  "ReviewLoop"       as Loop       #LightBlue
+participant  "ClauseDiscovery"  as CD         #LightGreen
+participant  "Embedder\n(sentence-transformers)" as EMB #PaleGreen
+participant  "PrecedentRetrieval" as PR       #LightYellow
+participant  "Retriever\n(ChromaDB)" as DB   #Wheat
+participant  "Interpretation"   as INTERP     #LightCyan
+participant  "RiskRating"       as RR         #LightSalmon
+participant  "Summarizer"       as SUM        #Plum
+participant  "LLMClient\n(Claude API)" as LLM #Orange
+participant  "OutputWriter"     as OUT        #Silver
+
+== Ingestion ==
+
+CLI -> Loop : run(contract_text, contract_id)
+
+== Clause Family Loop  [×4: assignment, change_of_control, termination, exclusivity] ==
+
+Loop -> Loop : for family in CLAUSE_FAMILIES
+
+group Step 1 — Clause Discovery  [no LLM, no ChromaDB]
+  Loop -> CD : discover_clause(contract_text, family, broad=False)
+  CD -> EMB : embed(anchor_queries[5])
+  EMB --> CD : anchor_embeddings (5 × 384)
+  CD -> EMB : embed(contract_chunks)
+  EMB --> CD : chunk_embeddings (N × 384)
+  CD -> CD : cosine_similarity_matrix\navg across anchors → score per chunk
+
+  alt score ≥ DISCOVERY_MIN_SCORE (0.30)
+    CD --> Loop : (found=True, text, score)
+  else score < 0.30 — retry with broad anchors
+    CD -> EMB : embed(broad_anchor_queries[7])
+    EMB --> CD : broad_anchor_embeddings
+    CD -> CD : recompute scores\nthreshold relaxed to 0.255
+    alt score ≥ 0.255
+      CD --> Loop : (found=True, text, score)
+    else still below threshold
+      CD --> Loop : (found=False, None, score)
+    end
+  end
+end
+
+group Step 2 — Precedent Retrieval  [2 LLM calls, 2 ChromaDB calls per family]
+  alt clause_found = False
+    Loop -> Loop : skip retrieval\nsimilar=[], contrasting=[]
+  else clause_found = True
+    Loop -> PR : retrieve_precedents(extracted_text, family, retriever, llm)
+
+    PR -> EMB : embed_one(extracted_text)
+    EMB --> PR : query_embedding (384)
+
+    PR -> DB : Retriever.query(embedding, family)\n[over-fetches 3× n_results, dedup by contract_id]
+    DB --> PR : similar_candidates[up to 9 raw → top 3 after dedup]
+
+    PR -> DB : Retriever.query_for_contrast(embedding, family)\n[fetches up to 10 candidates]
+    DB --> PR : contrast_candidates[up to 10, dedup → unique contracts]
+
+    note over PR,LLM : **1 batch LLM call** — all why_similar in one JSON response\n(replaces N separate round-trips — saves 2 API calls per family)
+    PR -> LLM : generate_json(\n  uploaded_clause + all similar candidates\n  → [{contract_id, why_similar}, ...])\n[max_tokens=512]
+    LLM --> PR : similar_explanations[JSON array]
+
+    PR -> LLM : generate_json(\n  uploaded_clause + all contrast candidates\n  → select top-3 + why_contrasting)\n[max_tokens=1024]
+    LLM --> PR : contrasting_selection[JSON array]
+
+    PR --> Loop : (similar[≤3], contrasting[≤3])
+  end
+end
+
+group Step 3a — Interpretation  [0–1 LLM calls per family]
+  Loop -> INTERP : interpret_clause(extracted_text, family, llm)
+  INTERP -> INTERP : Pass 1: regex/keyword heuristics\n(no LLM — deterministic fields)
+
+  alt family has semantic field\n(assignment → restricted_party\nchange_of_control → acquirer_bound\nexclusivity → scope)
+    INTERP -> LLM : generate_json(\n  clause_text + field_spec\n  → {field: value})\n[max_tokens=128]
+    LLM --> INTERP : semantic_field
+    note right : termination: 0 LLM calls\n(all fields are heuristic)
+  end
+
+  INTERP -> INTERP : compute confidence score\n(penalise short text + LLM fields)
+  INTERP --> Loop : structured_interpretation {dict}
+end
+
+group Step 3b — Risk Rating  [1–2 LLM calls per family]
+  Loop -> RR : generate_risk_card(family, text, found, similar, contrasting, llm)
+  RR -> LLM : generate_json(\n  clause + interpretation + precedents\n  → {risk_rating, risk_rationale, uncertainty_notes})\n[max_tokens=1024]
+
+  alt JSON parse success
+    LLM --> RR : parsed risk card
+  else JSON parse failure — retry once
+    RR -> LLM : generate_json(\n  same prompt + "return only JSON" prefix)
+    alt retry success
+      LLM --> RR : parsed risk card
+    else retry also fails
+      RR -> RR : graceful degradation\nrisk_rating=None\nnotes=["generation failed"]
+    end
+  end
+
+  RR --> Loop : ClauseCard
+end
+
+Loop -> Loop : append ClauseCard to cards[]
+
+== After all 4 families ==
+
+group Step 4 — Aggregation  [1 LLM call total]
+  Loop -> SUM : summarize_contract(contract_id, cards[4], llm)
+  SUM -> SUM : rule-based overall risk\n(max of 4 cards — no LLM)\nNone treated as medium
+  SUM -> LLM : generate_json(\n  all 4 clause cards summary block\n  → {overall_summary, top_red_flags})\n[max_tokens=1024]
+  LLM --> SUM : summary + flags
+  SUM --> Loop : (overall_summary, overall_risk, top_red_flags)
+
+  Loop -> Loop : assemble ContractReviewOutput
+end
+
+group Step 5 — Output Writing  [no LLM]
+  Loop -> OUT : write_json(output) → output/json/{id}.json
+  Loop -> OUT : render_html(output) → output/html/{id}.html
+end
+
+Loop --> CLI : ContractReviewOutput
+
+== LLM Call Budget Summary ==
+
+note over LLM
+  **Per contract (happy path, all 4 families found):**
+  ─────────────────────────────────────────────
+  Precedent why_similar    ×4 families = 4 calls
+  Precedent contrasting    ×4 families = 4 calls
+  Interpretation semantic  ×3 families = 3 calls  (0 for termination)
+  Risk rating              ×4 families = 4 calls
+  Aggregation summary                  = 1 call
+  ─────────────────────────────────────────────
+  **Total: 16 LLM calls  (was 24 before batching)**
+end note
+
+@enduml
