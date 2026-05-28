@@ -371,7 +371,7 @@ Results stream to `output/eval/results.json` and a stdout table:
 | **4a. Risk Rating (heuristic)** | Does the LLM rating match a deterministic rule-based label? | Heuristic agreement % |
 | **4b. Risk Rating (LLM-judge)** | Is the rating + rationale defensible? | Avg judge score (1–5), pass %, Jaccard similarity |
 
-Targets (from CLAUDE.md):
+Targets:
 
 | Metric | Target |
 |--------|--------|
